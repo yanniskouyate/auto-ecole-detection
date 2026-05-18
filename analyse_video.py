@@ -14,8 +14,8 @@ if not cap.isOpened():
 # Création (ou ouverture) du fichier CSV
 with open('rapport_conduite.csv', mode='w', newline='') as file:
     writer = csv.writer(file)
-    writer.writerow(['Frame', 'Objet', 'Confiance', 'Position_X'])
-
+    writer.writerow(['Frame', 'Categorie', 'Objet', 'Confiance', 'Position_X'])
+    
     frame_count = 0
     print("Début de l'analyse. Appuie sur 'q' pour quitter.")
     
