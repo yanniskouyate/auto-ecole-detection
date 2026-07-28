@@ -23,17 +23,28 @@ L'évaluation d'un élève conducteur repose souvent sur la vigilance constante 
 Le dépôt est structuré comme suit :
 
 ```bash
-├── README.md               # Le document que vous lisez actuellement
-├── Dockerfile              # Configuration pour conteneuriser l'environnement de production/dev
-├── requirements.txt        # Liste des dépendances Python requises
-├── main.py                 # Script automatisé (batch) idéal pour Docker (sans affichage direct)
-├── detect_auto.py          # Script de démonstration de détection en temps réel (GUI OpenCV)
-├── analyse_video.py        # Script métier principal (filtrage, alertes et génération de rapport)
-├── auto_ecole_test.mov     # Vidéo source de test (dashcam)
-├── yolo11n.pt              # Poids pré-entraînés du modèle YOLOv11 nano (téléchargés automatiquement)
-├── rapport_conduite.csv    # Rapport d'analyse produit par le script principal
-└── runs/                   # Dossier contenant les enregistrements vidéos annotés par YOLO
-    └── test_docker/        # Sortie générée par main.py
+├── README.md
+├── docs/formalisme_mathematique.md   # Formalisme (homographie, Kalman, TTC)
+├── config/homography_default.json    # Calibration IPM image ↔ sol (mètres)
+├── src/auto_ecole_math/              # Package mathématique Master
+│   ├── geometry/                     # Homographie / IPM
+│   ├── tracking/                     # Filtre de Kalman + multi-object tracking
+│   ├── kinematics/                   # TTC + distance de freinage
+│   ├── uncertainty/                  # EWMA / Beta-Bernoulli + stats de séance
+│   ├── database/                     # Persistance SQLAlchemy (historique séances)
+│   ├── simulation/                   # Génération de séquences annotées
+│   └── pipeline.py                   # Orchestration détection → rapport
+├── tests/                            # Tests unitaires (pytest)
+├── scripts/demo_homography.py        # Démo pixels → mètres
+├── scripts/init_db.py                # Création des tables
+├── scripts/migrate_csv_to_db.py      # Import d'un rapport CSV existant
+├── scripts/generate_dataset.py       # Génération de vidéos annotées
+├── scripts/validate_geometry.py      # Erreur du pipeline vs vérité terrain
+├── analyse_video.py                  # CLI métier (appelle le pipeline)
+├── main.py / detect_auto.py          # Scripts YOLO historiques
+├── requirements.txt / pyproject.toml
+├── auto_ecole.db                     # Base SQLite (générée, hors dépôt)
+└── rapport_conduite.csv / rapport_stats.json
 ```
 
 ---
@@ -90,11 +101,39 @@ python detect_auto.py
 ```
 * **Contrôle** : Appuyez sur la touche **`q`** pour fermer la fenêtre de rendu.
 
-### 3. Analyse Métier Auto-École & Génération de Rapport (`analyse_video.py`)
-Il s'agit du cœur applicatif. Ce script applique des filtres stricts basés sur les règles de conduite et enregistre les anomalies ou points d'attention dans un fichier CSV.
+### 3. Analyse Mathématique & Rapport (`analyse_video.py`)
+Cœur applicatif : YOLO → homographie (mètres) → Kalman → TTC / freinage → CSV + stats JSON.
 
 ```bash
-python analyse_video.py
+PYTHONPATH=src python analyse_video.py
+# Sans fenêtre OpenCV :
+PYTHONPATH=src python analyse_video.py --no-display
+```
+
+Démo homographie seule :
+
+```bash
+PYTHONPATH=src python scripts/demo_homography.py --no-display --max-frames 60
+```
+
+### 4. Interface Streamlit (rapport interactif)
+
+```bash
+# Recommandé (utilise forcément le Python du .venv, pas Anaconda) :
+./scripts/run_streamlit.sh
+
+# Équivalent manuel :
+source .venv/bin/activate
+PYTHONPATH=src python -m streamlit run streamlit_app.py
+```
+
+> ⚠️ Si tu lances juste `streamlit run ...` hors venv, macOS peut utiliser
+> `/opt/anaconda3/bin/streamlit` **sans OpenCV** → erreur `import cv2`.
+
+Tests unitaires :
+
+```bash
+PYTHONPATH=src pytest tests/ -v
 ```
 
 ---
@@ -113,22 +152,203 @@ Dans `analyse_video.py`, nous n'affichons pas simplement toutes les détections 
 
 ## 📊 Structure du Rapport de Conduite (`rapport_conduite.csv`)
 
-Le script `analyse_video.py` génère un fichier structuré facilitant le débriefing d'une séance. Voici un exemple de sortie générée :
+Le pipeline génère un CSV enrichi (métriques physiques) :
 
-```csv
-Frame,Categorie,Objet,Confiance,Position_X
-6,Usager Vulnérable,person,0.704838752746582,259.82208251953125
-7,Usager Vulnérable,person,0.7003364562988281,259.936279296875
-84,Signalisation,stop sign,0.8108956813812256,1226.40771484375
-207,Usager Vulnérable,person,0.7017578482627869,83.88787841796875
+| Colonne | Description |
+| :--- | :--- |
+| `Frame`, `track_id` | Temps + identité Kalman de l'objet |
+| `Categorie`, `Objet`, `Confiance`, `Confiance_lissee` | Classe métier + score YOLO / EWMA |
+| `X_m`, `Y_m`, `vx_mps`, `vy_mps`, `speed_mps` | État filtré dans le plan sol |
+| `d_m`, `lateral_m`, `ttc_s` | Distance, écart latéral, Time-To-Collision |
+| `d_frein_m`, `margin_m` | Distance de freinage théorique et marge |
+
+Un résumé statistique de séance est écrit dans `rapport_stats.json`
+(moyenne / variance des distances, distribution des TTC, etc.).
+
+Voir le formalisme détaillé : [`docs/formalisme_mathematique.md`](docs/formalisme_mathematique.md).
+
+---
+
+## 🗄️ Base de données (historique des séances)
+
+Le CSV et le JSON restent générés à chaque analyse, mais chaque séance est
+**aussi** enregistrée en base. C'est ce qui permet de comparer plusieurs
+séances, de suivre la progression d'un élève et de retrouver une analyse
+plusieurs mois après.
+
+### Schéma
+
+```
+students ──────┐
+               ├──< sessions >──┬──< detections   (1 ligne / objet / frame)
+instructors ───┤                └─── statistics   (agrégats, 1–1)
+               │
+calibrations ──┘
 ```
 
-### Signification des colonnes :
-- **Frame** : Numéro de l'image de la vidéo permettant de retrouver l'instant exact de l'action.
-- **Categorie** : Type d'événement filtré (ex: *Signalisation*, *Usager Vulnérable*).
-- **Objet** : Classe d'objet détectée par YOLO (ex: *person*, *stop sign*).
-- **Confiance** : Score de confiance de la détection (entre 0 et 1).
-- **Position_X** : Coordonnée horizontale (pixel) du coin gauche de la boîte de détection. Utile pour savoir si l'obstacle se situe à gauche, au centre ou à droite de la trajectoire.
+| Table | Rôle |
+| :--- | :--- |
+| `students` / `instructors` | Élèves et moniteurs |
+| `sessions` | Une vidéo analysée : date, modèle YOLO, fps, durée, paramètres de freinage |
+| `detections` | État filtré de chaque objet suivi, frame par frame (colonnes du CSV) |
+| `statistics` | Résumé de séance + compteurs `n_critical_ttc` / `n_negative_margin` |
+| `calibrations` | Homographie utilisée, dédupliquée par empreinte SHA-256 (traçabilité) |
+
+### Initialisation
+
+```bash
+PYTHONPATH=src python scripts/init_db.py --demo
+```
+
+Cela crée `auto_ecole.db` (SQLite) à la racine. Pour passer à PostgreSQL,
+aucune modification de code n'est nécessaire :
+
+```bash
+export AUTO_ECOLE_DB_URL="postgresql+psycopg://user:pwd@localhost/auto_ecole"
+```
+
+### Analyser en rattachant la séance à un élève
+
+```bash
+PYTHONPATH=src python analyse_video.py --no-display \
+  --student "Alice Dupont" --instructor "M. Martin" \
+  --label "Séance 3 — créneau"
+```
+
+L'élève et le moniteur sont créés s'ils n'existent pas encore.
+Pour désactiver complètement la persistance : `--no-db`.
+
+### Importer les rapports produits avant la mise en place de la base
+
+```bash
+PYTHONPATH=src python scripts/migrate_csv_to_db.py \
+  --student "Alice Dupont" --label "Séance historique"
+```
+
+### Interroger l'historique
+
+```python
+from auto_ecole_math.database.db import session_scope
+from auto_ecole_math.database.queries import (
+    critical_events, list_sessions, student_progress, vulnerable_users_close,
+)
+
+with session_scope() as db:
+    for s in list_sessions(db, student_id=1):
+        print(s.id, s.label, s.date)
+
+    # Piétons / cyclistes détectés à moins de 5 m
+    for d in vulnerable_users_close(db, session_id=1, max_distance_m=5.0):
+        print(f"frame {d.frame} — {d.class_name} à {d.distance_m:.1f} m")
+
+    # TTC < 3 s ou marge de freinage négative
+    print(len(critical_events(db, session_id=1)), "événements à risque")
+
+    # Évolution de l'élève séance après séance
+    for row in student_progress(db, student_id=1):
+        print(row["date"], row["distance_mean"], row["n_critical_ttc"])
+```
+
+L'onglet **« Historique des séances »** de l'interface Streamlit expose ces
+mêmes données sans écrire une ligne de SQL.
+
+---
+
+## 🎬 Génération de séquences annotées
+
+Le projet embarque un générateur de dashcam synthétique. Il produit des vidéos
+de situations de conduite — dont des scénarios d'accident — accompagnées d'une
+**vérité terrain exacte** : les positions annotées sont celles qui ont servi au
+rendu, pas une estimation.
+
+Aucun simulateur externe n'est requis (CARLA ne dispose d'aucune build macOS et
+exige un GPU NVIDIA) : le rendu s'appuie sur OpenCV et sur le modèle de caméra
+du projet.
+
+### Scénarios disponibles
+
+| Scénario | Erreur annotée | Contact |
+| :--- | :--- | :--- |
+| `conduite_saine` | — (référence négative) | non |
+| `distance_securite` | Intervalle trop court, réaction tardive | oui |
+| `pieton_non_anticipe` | Piéton traversant, freinage trop tardif | oui |
+| `rabattement_non_controle` | Rabattement sur voie occupée | oui |
+| `ecart_lateral_cycliste` | Dépassement à moins d'un mètre | non |
+| `refus_priorite` | Véhicule transversal, aucun ralentissement | oui |
+
+### Générer
+
+```bash
+PYTHONPATH=src python scripts/generate_dataset.py --variations 10 --yolo
+```
+
+Chaque séquence produit trois fichiers dans `outputs/dataset/` :
+
+- `<nom>.mp4` — la vidéo ;
+- `<nom>_truth.csv` — vérité terrain (colonnes du rapport d'analyse + boîte
+  englobante en pixels + `frames_to_collision`) ;
+- `<nom>_meta.json` — erreur commise, frame de collision, calibration employée.
+
+`--yolo` ajoute les labels au format YOLO dans `outputs/dataset/labels/`.
+Chaque `(scénario, variation)` est déterministe : le jeu est reproductible.
+
+### Mesurer l'erreur du pipeline
+
+C'est le principal intérêt du générateur : disposer enfin d'une référence pour
+quantifier la chaîne géométrique, sans que les erreurs de détection de YOLO ne
+viennent masquer celles de l'homographie.
+
+```bash
+PYTHONPATH=src python scripts/validate_geometry.py
+```
+
+Le script rejoue chaque séquence à travers homographie → Kalman → TTC et
+compare à la vérité. Trois enseignements ressortent des mesures actuelles :
+
+1. **Biais systématique de distance.** La boîte englobante touche le sol à son
+   bord *avant*, pas en son centre : le pipeline sous-estime la distance de la
+   demi-longueur de l'objet (≈ 2,25 m pour une voiture, 0,85 m pour un vélo).
+   Correction faite, l'erreur résiduelle tombe à quelques millimètres.
+2. **Le TTC est inexploitable en début de piste.** Tant que la vitesse du
+   filtre de Kalman n'a pas convergé (~15 frames, soit 0,5 s), l'erreur de TTC
+   dépasse la trentaine de secondes. Il ne faut pas déclencher d'alerte sur une
+   piste non établie.
+3. **Le modèle de Kalman est à vitesse constante.** Il décroche pendant un
+   freinage appuyé — précisément le cas d'urgence. Un modèle à accélération
+   constante serait plus adapté.
+
+### Calibration
+
+⚠️ `config/homography_default.json` **n'est pas physiquement réalisable**. Son
+échelle latérale décroît d'un facteur 1,69 entre 4 m et 20 m, alors qu'une
+caméra sténopé impose un facteur 5 (l'échelle varie en 1/Y). La seule pose
+compatible serait une caméra inclinée à ~86° vers le sol. Concrètement, le
+point annoncé à 20 m est en réalité vers 6,8 m : **toutes les distances
+au-delà de quelques mètres sont surestimées**.
+
+Le générateur utilise donc par défaut `config/homography_pinhole.json`, dérivée
+de paramètres physiques explicites (focale, hauteur de caméra, inclinaison) et
+cohérente par construction :
+
+```bash
+PYTHONPATH=src python -c "
+from auto_ecole_math.simulation.camera import PinholeCamera
+PinholeCamera(horizontal_fov_deg=60, height_m=1.25, pitch_deg=4).save_calibration('config/homography_pinhole.json')"
+```
+
+Vérifier une calibration quelconque :
+
+```python
+from auto_ecole_math.geometry.homography import HomographyEstimator
+from auto_ecole_math.simulation.camera import check_pinhole_consistency
+
+h = HomographyEstimator.from_json("config/homography_default.json")
+print(check_pinhole_consistency(h))   # -> consistent: False
+```
+
+Cette calibration synthétique reste une **valeur de repli** : pour un usage en
+production il faut mesurer la vraie caméra sur des repères au sol de longueur
+connue.
 
 ---
 
