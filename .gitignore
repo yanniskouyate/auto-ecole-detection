@@ -1,4 +1,13 @@
 auto_ecole_env/
+.venv/
 .DS_Store
+.cursor/
 *.pt
 *.mov
+outputs/
+.pytest_cache/
+__pycache__/
+*.pyc
+rapport_stats.json
+*.db
+*.sqlite3
