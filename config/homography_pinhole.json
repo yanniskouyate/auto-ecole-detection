@@ -1,0 +1,56 @@
+{
+  "image_size": [
+    1280,
+    832
+  ],
+  "description": "Calibration dérivée d'un modèle sténopé explicite (FOV 60.0°, hauteur 1.25 m, inclinaison 4.0°). Cohérente par construction : l'échelle latérale décroît bien en 1/Y.",
+  "image_points": [
+    [
+      38.231,
+      769.37
+    ],
+    [
+      1241.769,
+      769.37
+    ],
+    [
+      704.633,
+      384.764
+    ],
+    [
+      575.367,
+      384.764
+    ]
+  ],
+  "ground_points": [
+    [
+      -1.75,
+      3.144
+    ],
+    [
+      1.75,
+      3.144
+    ],
+    [
+      1.75,
+      30.0
+    ],
+    [
+      -1.75,
+      30.0
+    ]
+  ],
+  "ego_position": [
+    0.0,
+    0.0
+  ],
+  "lane_width_m": 3.5,
+  "camera": {
+    "horizontal_fov_deg": 60.0,
+    "height_m": 1.25,
+    "pitch_deg": 4.0,
+    "focal_px": 1108.513,
+    "horizon_v_px": 338.485
+  },
+  "notes": "Généré par auto_ecole_math.simulation.camera. Remplacer les valeurs par une vraie mesure terrain (repères au sol de longueur connue) avant usage en production."
+}
