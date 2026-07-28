@@ -1,0 +1,19 @@
+{
+  "image_size": [1280, 832],
+  "description": "Calibration IPM approximative pour dashcam 1280x832. À recalibrer avec des marquages au sol de longueur connue. Axes sol: X latéral (m, +à droite), Y longitudinal (m, +devant le véhicule). Ego à (0, 0).",
+  "image_points": [
+    [200, 780],
+    [1080, 780],
+    [900, 480],
+    [380, 480]
+  ],
+  "ground_points": [
+    [-1.75, 4.0],
+    [1.75, 4.0],
+    [1.75, 20.0],
+    [-1.75, 20.0]
+  ],
+  "ego_position": [0.0, 0.0],
+  "lane_width_m": 3.5,
+  "notes": "Les 4 points image délimitent un trapèze route (bas = proche, haut = loin). Les ground_points forment un rectangle de 3.5 m x 16 m (Y de 4 m à 20 m)."
+}
