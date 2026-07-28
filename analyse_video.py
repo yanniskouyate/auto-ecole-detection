@@ -1,79 +1,101 @@
-import cv2
-from ultralytics import YOLO
-import csv
+"""Analyse métier auto-école — pipeline mathématique (homographie, Kalman, TTC).
 
-print("Chargement du modèle...")
-model = YOLO("yolo11n.pt")
+Ce script est le point d'entrée CLI. La logique scientifique est dans
+``src/auto_ecole_math/``.
 
-cap = cv2.VideoCapture("auto_ecole_test.mov")
+Usage::
 
-if not cap.isOpened():
-    print("Erreur : Impossible d'ouvrir la vidéo.")
-    exit()
+    PYTHONPATH=src python analyse_video.py
+    PYTHONPATH=src python analyse_video.py --no-display
+"""
 
-# Création (ou ouverture) du fichier CSV
-with open('rapport_conduite.csv', mode='w', newline='') as file:
-    writer = csv.writer(file)
-    writer.writerow(['Frame', 'Categorie', 'Objet', 'Confiance', 'Position_X'])
-    
-    frame_count = 0
-    print("Début de l'analyse. Appuie sur 'q' pour quitter.")
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret: 
-            print("Fin de la vidéo.")
-            break
-        
-        frame_count += 1
-        
-        # On passe l'image au modèle (sans stream=True pour éviter le bug du générateur sur une seule frame)
-        results = model(frame)
+from __future__ import annotations
 
-        # On parcourt les résultats
-        for r in results:
-            # 1. On crée l'image avec les boîtes dessinées dessus directement ici
-            annotated_frame = r.plot()
-            
-            # 2. On extrait les données pour notre fichier CSV
-            for box in r.boxes:
-                cls = int(box.cls[0])
-                label = r.names[cls]
-                conf = float(box.conf[0])
-                coords = box.xyxy[0].tolist() # [x1, y1, x2, y2]
+import argparse
+import sys
+from pathlib import Path
 
-                # ---------------------------------------------------------
-                # DÉBUT DE TES RÈGLES D'AUTO-ÉCOLE
-                # ---------------------------------------------------------
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT / "src"))
 
-                # RÈGLE 1 : Le Panneau Stop
-                if label == "stop sign" and conf > 0.8:
-                    writer.writerow([frame_count, "Signalisation", label, conf, coords[0]])
-                    print(f"🛑 Panneau STOP détecté à l'image {frame_count}")
+from auto_ecole_math.pipeline import DrivingAnalysisPipeline, PipelineConfig  # noqa: E402
 
-                # RÈGLE 2 : Le Vélo (Distance de sécurité)
-                elif label == "bicycle" and conf > 0.60:
-                    # On met une confiance un peu plus basse (60%) car les vélos sont 
-                    # parfois plus durs à détecter de loin.
-                    writer.writerow([frame_count, "Usager Vulnérable", label, conf, coords[0]])
-                    print(f"🚲 Vélo repéré à l'image {frame_count} - Attention à l'écart !")
 
-                # RÈGLE 3 : Le Piéton
-                elif label == "person" and conf > 0.70:
-                    writer.writerow([frame_count, "Usager Vulnérable", label, conf, coords[0]])
-                    print(f"🚶 Piéton repéré à l'image {frame_count}")
-                
-                # ---------------------------------------------------------
-                # FIN DE TES RÈGLES
-                # ---------------------------------------------------------
+def _resolve_people(args) -> tuple[int | None, int | None]:
+    """Retrouve (ou crée) l'élève et le moniteur nommés en ligne de commande."""
+    if args.no_db or (not args.student and not args.instructor):
+        return None, None
 
-            # 3. On affiche l'image annotée (le bug de la ligne 36 est corrigé)
-            cv2.imshow("Analyse", annotated_frame)
-            
-        # Touche 'q' pour quitter
-        if cv2.waitKey(1) & 0xFF == ord('q'): 
-            break
+    from auto_ecole_math.database.db import init_db, session_scope
+    from auto_ecole_math.database.queries import (
+        get_or_create_instructor,
+        get_or_create_student,
+    )
 
-cap.release()
-cv2.destroyAllWindows()
-print("Analyse terminée. Vérifie le fichier rapport_conduite.csv !")
+    init_db(args.db_url)
+    student_id = instructor_id = None
+    with session_scope(args.db_url) as db:
+        if args.student:
+            student_id = get_or_create_student(db, args.student).id
+        if args.instructor:
+            instructor_id = get_or_create_instructor(db, args.instructor).id
+    return student_id, instructor_id
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Analyse de conduite : YOLO + géométrie projective + Kalman + TTC"
+    )
+    parser.add_argument("--video", default=str(ROOT / "auto_ecole_test.mov"))
+    parser.add_argument("--model", default=str(ROOT / "yolo11n.pt"))
+    parser.add_argument(
+        "--calib",
+        default=str(ROOT / "config" / "homography_default.json"),
+    )
+    parser.add_argument("--csv", default=str(ROOT / "rapport_conduite.csv"))
+    parser.add_argument("--stats", default=str(ROOT / "rapport_stats.json"))
+    parser.add_argument("--no-display", action="store_true")
+    parser.add_argument("--ego-speed", type=float, default=0.0, help="Vitesse ego (m/s), 0 si inconnue")
+    parser.add_argument(
+        "--no-db",
+        action="store_true",
+        help="Désactive l'enregistrement en base (CSV + JSON uniquement)",
+    )
+    parser.add_argument("--db-url", default=None, help="URL SQLAlchemy (défaut : SQLite local)")
+    parser.add_argument("--student", default=None, help="Nom de l'élève (créé si absent)")
+    parser.add_argument("--instructor", default=None, help="Nom du moniteur (créé si absent)")
+    parser.add_argument("--label", default=None, help="Libellé de la séance")
+    args = parser.parse_args()
+
+    student_id, instructor_id = _resolve_people(args)
+
+    print("Chargement du pipeline mathématique...")
+    cfg = PipelineConfig(
+        video_path=args.video,
+        model_path=args.model,
+        calibration_path=args.calib,
+        csv_path=args.csv,
+        stats_path=args.stats,
+        show_display=not args.no_display,
+        ego_speed_mps=args.ego_speed,
+        db_enabled=not args.no_db,
+        db_url=args.db_url,
+        student_id=student_id,
+        instructor_id=instructor_id,
+        session_label=args.label,
+    )
+    pipeline = DrivingAnalysisPipeline(cfg)
+    stats = pipeline.run()
+    summary = stats.summarize()
+    print(
+        f"Résumé séance — "
+        f"d̄={summary.get('distance_m_mean', float('nan')):.2f} m, "
+        f"TTC̄={summary.get('ttc_s_mean', float('nan')):.2f} s, "
+        f"événements={summary.get('n_events', 0)}"
+    )
+    if pipeline.session_id is not None:
+        print(f"Séance enregistrée en base sous l'identifiant #{pipeline.session_id}")
+
+
+if __name__ == "__main__":
+    main()
